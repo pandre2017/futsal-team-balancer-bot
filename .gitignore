@@ -1,0 +1,20 @@
+# Secrets
+.env
+
+# Real player roster: contains real people's names and skill ratings.
+# Keep it local. players.example.csv is the shareable template.
+players.csv
+
+# Editors
+*.code-workspace
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# macOS
+.DS_Store
