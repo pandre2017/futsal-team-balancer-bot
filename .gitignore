@@ -18,3 +18,9 @@ venv/
 
 # macOS
 .DS_Store
+
+# Project-local Python runtime
+.python/
+
+# Alternate local roster
+players2.csv

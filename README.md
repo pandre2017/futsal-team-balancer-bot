@@ -8,19 +8,19 @@ split plus the score gap between the two sides.
 
 ```
 /balance
-1 Ana Costa
-2 - Bruno Silva
-3 Carla Mendes
+1 John Doe
+2 - Jane Smith
+3 Alice Johnson
 ...
 ```
 
 ```
 Team A score=18.33
-Ana Costa  4.50
+John Doe  4.50
 ...
 
 Team B score=18.25
-Gui Pinto  5.00
+George Miller  5.00
 ...
 
 delta=0.08
@@ -36,7 +36,7 @@ delta=0.08
 | `/format` | Turns two team lines into a TSV file for pasting into a spreadsheet |
 
 `/balance` accepts comma-separated names on one line, or one name per line, with
-or without numbering (`1 Ana`, `2 - Bruno`, `3. Carla`). Players can be given by
+or without numbering (`1 John`, `2 - Jane`, `3. Alice`). Players can be given by
 alias or by name; accents, casing and invisible characters pasted from chat apps
 are ignored.
 
@@ -66,14 +66,20 @@ python team-balancer-bot.py
 Players live in `players.csv`, next to the script:
 
 ```csv
-alias,name,group,score
-acosta,Ana Costa,Monday Hall,4.50
+Nome,Alias,Aliases,Grupo,Score Avaliador 1,Score Avaliador 2,Score Avaliador 3,Score Avaliador 4,Avg Score
+John Doe,jdoe,"jdoe, john",Monday Hall,4.50,,,4.50,4.50
 ```
 
-- **alias** — short handle, unique, what you type in `/balance`
-- **name** — display name shown in the output
-- **group** — which regular game they belong to (free text, optional)
-- **score** — skill rating; the balancer only cares about relative values
+- **Nome** — display name; players can be identified by their name in `/balance`.
+- **Alias / Aliases** — optional handles for each player. Separate multiple aliases
+  with commas and quote the CSV cell, as above. Either or both columns can be used;
+  aliases must be unique across players. Matching ignores case and accents.
+- **Avg Score** — the score used for balancing. The script reads this value;
+  it does not calculate an average from individual ratings.
+- **Grupo / Score Avaliador …** — optional information ignored by the bot.
+
+The older `alias,name,group,score` format is also supported. Columns can appear
+in any order; `Avg Score` takes priority over `score` if both exist.
 
 The file is validated on startup: a bad score, a duplicate alias or a missing
 column stops the bot with the offending line number rather than failing later

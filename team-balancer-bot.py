@@ -16,17 +16,24 @@ WHITELISTED_CHAT_IDS = os.getenv("WHITELISTED_CHAT_IDS", "")
 WHITELISTED_CHAT_IDS = [int(x.strip()) for x in WHITELISTED_CHAT_IDS.split(",") if x.strip()]
 
 
+def sanitize_string(text: str) -> str:
+    """Remove accents, invisible formatting marks, and lowercase for comparison."""
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) not in ('Mn', 'Cf'))
+    return text.strip().lower()
+
+
 # classes
 
 class Player:
-    def __init__(self, alias: str, name: str, score: float, group: str = ""):
+    def __init__(self, alias: str, name: str, score: float, aliases=None):
         self.alias = alias
+        self.aliases = list(dict.fromkeys([a for a in [alias, *(aliases or [])] if a]))
         self.name = name
         self.score = score
-        self.group = group
 
     def __str__(self):
-        return f"Player(alias='{self.alias}', name='{self.name}', score={self.score}, group='{self.group}')"
+        return f"Player(alias='{self.alias}', name='{self.name}', score={self.score})"
 
 
 class Team:
@@ -41,52 +48,78 @@ class Team:
 
 # players
 
-PLAYERS_FILE = Path(__file__).resolve().parent / "players.csv"
+PLAYERS_FILE = Path(os.getenv("PLAYERS_FILE", "players.csv")).expanduser()
+if not PLAYERS_FILE.is_absolute():
+    PLAYERS_FILE = Path(__file__).resolve().parent / PLAYERS_FILE
 
 
 def load_players(path: Path = PLAYERS_FILE) -> list:
-    """Load the player roster from a CSV file sitting next to this script.
+    """Load names, aliases, and scores from either supported CSV format.
 
-    Expected columns: alias, name, group, score
+    Columns can appear in any order. Prefer Avg Score over score when both
+    exist. Combine Alias and Aliases, splitting comma-separated alias lists.
     """
     if not path.exists():
-        raise FileNotFoundError(
-            f"Player roster not found: {path}\n"
-            f"Copy players.example.csv to {path.name} and fill in your own players."
-        )
+        raise FileNotFoundError(f"Player roster not found: {path}")
 
     players = []
     seen = {}
-    with open(path, encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        missing = {"alias", "name", "score"} - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"{path.name} is missing column(s): {', '.join(sorted(missing))}")
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        headers = next(reader, None)
+        if not headers or len(headers) < 3:
+            raise ValueError(f"{path.name} must have name, alias, and average-score columns")
+
+        normalized_headers = [header.strip().casefold() for header in headers]
+
+        def column_index(*labels):
+            for label in labels:
+                if label in normalized_headers:
+                    return normalized_headers.index(label)
+            raise ValueError(
+                f"{path.name}: missing required column ({' or '.join(labels)})"
+            )
+
+        name_index = column_index("nome", "name")
+        alias_indices = [i for i, header in enumerate(normalized_headers)
+                         if header in {"alias", "aliases"}]
+        if not alias_indices:
+            raise ValueError(f"{path.name}: missing required column (alias or aliases)")
+        score_index = column_index("avg score", "average score", "score")
 
         for lineno, row in enumerate(reader, start=2):
-            alias = (row.get("alias") or "").strip()
-            name = (row.get("name") or "").strip()
-            raw_score = (row.get("score") or "").strip()
+            if not row or all(not value.strip() for value in row):
+                continue
+
+            name = (row[name_index] if len(row) > name_index else "").strip()
+            aliases = {}
+            for index in alias_indices:
+                for value in (row[index] if len(row) > index else "").split(","):
+                    value = value.strip()
+                    key = sanitize_string(value)
+                    if key:
+                        aliases.setdefault(key, value)
+            alias = next(iter(aliases.values()), "")
+            raw_score = (row[score_index] if len(row) > score_index else "").strip()
             if not alias and not name and not raw_score:
-                continue  # tolerate blank spacer rows
-            if not alias:
-                raise ValueError(f"{path.name} line {lineno}: missing alias")
+                continue
             if not name:
                 raise ValueError(f"{path.name} line {lineno}: player '{alias}' is missing a name")
             try:
                 score = float(raw_score.replace(",", "."))
             except ValueError:
                 raise ValueError(
-                    f"{path.name} line {lineno}: player '{alias}' has an invalid score {raw_score!r}"
+                    f"{path.name} line {lineno}: player '{name}' has an invalid average score {raw_score!r}"
                 ) from None
-            if alias.lower() in seen:
-                raise ValueError(
-                    f"{path.name} line {lineno}: duplicate alias '{alias}' "
-                    f"(already defined on line {seen[alias.lower()]})"
-                )
-            seen[alias.lower()] = lineno
+            for key, value in aliases.items():
+                if key in seen:
+                    raise ValueError(
+                        f"{path.name} line {lineno}: duplicate alias '{value}' "
+                        f"(already defined on line {seen[key]})"
+                    )
+                seen[key] = lineno
             players.append(Player(alias=alias, name=name, score=score,
-                                  group=(row.get("group") or "").strip()))
+                                  aliases=list(aliases.values())))
 
     if not players:
         raise ValueError(f"{path.name} contains no players")
@@ -98,11 +131,18 @@ PLAYERS_LIST = load_players()
 
 # methods
 
-def sanitize_string(text: str) -> str:
-    """Remove accents, invisible formatting marks, and lowercase for comparison."""
-    text = unicodedata.normalize('NFD', text)
-    text = ''.join(c for c in text if unicodedata.category(c) not in ('Mn', 'Cf'))
-    return text.strip().lower()
+def find_player(identifier: str, players=None):
+    """Match a full name or any alias before falling back to a partial name."""
+    players = PLAYERS_LIST if players is None else players
+    identifier = sanitize_string(identifier)
+    if not identifier:
+        return None
+    for player in players:
+        if identifier == sanitize_string(player.name) or any(
+            identifier == sanitize_string(alias) for alias in player.aliases
+        ):
+            return player
+    return next((p for p in players if identifier in sanitize_string(p.name)), None)
 
 def is_whitelisted(chat_id):
     return chat_id in WHITELISTED_CHAT_IDS
@@ -272,14 +312,7 @@ async def balance_teams_command(update: Update, context: ContextTypes.DEFAULT_TY
     players = []
     for alias in items:
         print(f"Looking for: {alias}")
-        sanitized_input = sanitize_string(alias)
-        
-        # Try to find by alias
-        found_player = next((p for p in PLAYERS_LIST if sanitize_string(p.alias) == sanitized_input), None)
-        
-        # If not found by alias, try to find by name (substring matching)
-        if not found_player:
-            found_player = next((p for p in PLAYERS_LIST if sanitized_input in sanitize_string(p.name)), None)
+        found_player = find_player(alias)
         
         if found_player: 
             print(f"Found: {found_player}")
