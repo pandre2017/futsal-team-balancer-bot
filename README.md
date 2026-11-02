@@ -63,6 +63,60 @@ python team-balancer-bot.py
 
 ## The roster
 
+### Preview a Google spreadsheet
+
+To check a read-only Google Sheets connection, install `requirements.txt`,
+put the service account JSON key in `.secrets/google-service-account.json`,
+and share the spreadsheet with the service account's email as a Viewer.
+Enable the Google Sheets API in the account's Google Cloud project.
+
+Set these values in your local `.env`:
+
+```dotenv
+GOOGLE_APPLICATION_CREDENTIALS=.secrets/google-service-account.json
+GOOGLE_SHEETS_SPREADSHEET_ID=your-spreadsheet-id
+GOOGLE_SHEETS_RANGE="'Players'!A:Z"
+```
+
+Use the ID between `/d/` and `/edit` in the spreadsheet URL. Replace `Players`
+with the actual tab name and choose a range covering the desired columns.
+Relative credentials paths are resolved from the script's directory.
+
+```bash
+.venv/bin/python team-balancer-bot.py --print-google-sheet
+```
+
+This prints the selected range as tab-separated rows, including headers and
+calculated formula values, then exits without starting Telegram.
+
+To use the spreadsheet as the bot's roster, set `PLAYERS_SOURCE=google_sheets`
+in `.env`. To use a local CSV, set `PLAYERS_SOURCE=csv` and configure
+`PLAYERS_FILE=players.csv`. CSV is the default when `PLAYERS_SOURCE` is absent.
+Run the bot normally with `.venv/bin/python team-balancer-bot.py`.
+
+Both modes use the same name, alias, and score validation. The roster loads
+once at startup: restart the bot after changing modes or editing the data.
+If the selected source fails, startup stops with an error rather than silently
+using another roster. Keep `.env` and `.secrets/` out of Git.
+
+### Local secrets and private data
+
+Copy `.env.example` to `.env` and fill in your settings locally. Only the
+placeholder `.env.example` belongs in Git. Keep Google JSON keys under
+`.secrets/`; the real player rosters (`players*.csv`) are also ignored, except
+for the fictional `players.example.csv` template.
+
+Before committing, check `git status --short` and run:
+
+```bash
+git check-ignore .env .secrets/google-service-account.json players.csv
+```
+
+The command should list all three paths. Ignore rules do not remove files
+already committed. If a key is accidentally committed, revoke it and replace
+it rather than relying on a later deletion. The `--print-google-sheet` command
+intentionally prints private roster data; avoid sharing its output.
+
 Players live in `players.csv`, next to the script:
 
 ```csv

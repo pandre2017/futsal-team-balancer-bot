@@ -1,15 +1,18 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+import argparse
 import csv
 import io
 import os
 import re
+import sys
 import unicodedata
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_DIR = Path(__file__).resolve().parent
+load_dotenv(PROJECT_DIR / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WHITELISTED_CHAT_IDS = os.getenv("WHITELISTED_CHAT_IDS", "")
@@ -54,79 +57,162 @@ if not PLAYERS_FILE.is_absolute():
 
 
 def load_players(path: Path = PLAYERS_FILE) -> list:
-    """Load names, aliases, and scores from either supported CSV format.
-
-    Columns can appear in any order. Prefer Avg Score over score when both
-    exist. Combine Alias and Aliases, splitting comma-separated alias lists.
-    """
+    """Read the local CSV and validate its roster."""
     if not path.exists():
         raise FileNotFoundError(f"Player roster not found: {path}")
+    with path.open(encoding="utf-8-sig", newline="") as file:
+        return parse_players(csv.reader(file), path.name)
 
+
+def parse_players(rows, source: str) -> list:
+    """Parse CSV or Sheets rows with the same header, alias, and score rules."""
     players = []
     seen = {}
-    with path.open(encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
-        headers = next(reader, None)
-        if not headers or len(headers) < 3:
-            raise ValueError(f"{path.name} must have name, alias, and average-score columns")
+    reader = iter(rows)
+    headers = next(reader, None)
+    if not headers or len(headers) < 3:
+        raise ValueError(f"{source} must have name, alias, and average-score columns")
 
-        normalized_headers = [header.strip().casefold() for header in headers]
+    normalized_headers = [header.strip().casefold() for header in headers]
 
-        def column_index(*labels):
-            for label in labels:
-                if label in normalized_headers:
-                    return normalized_headers.index(label)
+    def column_index(*labels):
+        for label in labels:
+            if label in normalized_headers:
+                return normalized_headers.index(label)
+        raise ValueError(
+            f"{source}: missing required column ({' or '.join(labels)})"
+        )
+
+    name_index = column_index("nome", "name")
+    alias_indices = [i for i, header in enumerate(normalized_headers)
+                     if header in {"alias", "aliases"}]
+    if not alias_indices:
+        raise ValueError(f"{source}: missing required column (alias or aliases)")
+    score_index = column_index("avg score", "average score", "score")
+
+    for lineno, row in enumerate(reader, start=2):
+        row = ["" if value is None else str(value) for value in row]
+        if not row or all(not value.strip() for value in row):
+            continue
+
+        name = (row[name_index] if len(row) > name_index else "").strip()
+        aliases = {}
+        for index in alias_indices:
+            for value in (row[index] if len(row) > index else "").split(","):
+                value = value.strip()
+                key = sanitize_string(value)
+                if key:
+                    aliases.setdefault(key, value)
+        alias = next(iter(aliases.values()), "")
+        raw_score = (row[score_index] if len(row) > score_index else "").strip()
+        if not alias and not name and not raw_score:
+            continue
+        if not name:
+            raise ValueError(f"{source} line {lineno}: player '{alias}' is missing a name")
+        try:
+            score = float(raw_score.replace(",", "."))
+        except ValueError:
             raise ValueError(
-                f"{path.name}: missing required column ({' or '.join(labels)})"
-            )
-
-        name_index = column_index("nome", "name")
-        alias_indices = [i for i, header in enumerate(normalized_headers)
-                         if header in {"alias", "aliases"}]
-        if not alias_indices:
-            raise ValueError(f"{path.name}: missing required column (alias or aliases)")
-        score_index = column_index("avg score", "average score", "score")
-
-        for lineno, row in enumerate(reader, start=2):
-            if not row or all(not value.strip() for value in row):
-                continue
-
-            name = (row[name_index] if len(row) > name_index else "").strip()
-            aliases = {}
-            for index in alias_indices:
-                for value in (row[index] if len(row) > index else "").split(","):
-                    value = value.strip()
-                    key = sanitize_string(value)
-                    if key:
-                        aliases.setdefault(key, value)
-            alias = next(iter(aliases.values()), "")
-            raw_score = (row[score_index] if len(row) > score_index else "").strip()
-            if not alias and not name and not raw_score:
-                continue
-            if not name:
-                raise ValueError(f"{path.name} line {lineno}: player '{alias}' is missing a name")
-            try:
-                score = float(raw_score.replace(",", "."))
-            except ValueError:
+                f"{source} line {lineno}: player '{name}' has an invalid average score {raw_score!r}"
+            ) from None
+        for key, value in aliases.items():
+            if key in seen:
                 raise ValueError(
-                    f"{path.name} line {lineno}: player '{name}' has an invalid average score {raw_score!r}"
-                ) from None
-            for key, value in aliases.items():
-                if key in seen:
-                    raise ValueError(
-                        f"{path.name} line {lineno}: duplicate alias '{value}' "
-                        f"(already defined on line {seen[key]})"
-                    )
-                seen[key] = lineno
-            players.append(Player(alias=alias, name=name, score=score,
-                                  aliases=list(aliases.values())))
-
+                    f"{source} line {lineno}: duplicate alias '{value}' "
+                    f"(already defined on line {seen[key]})"
+                )
+            seen[key] = lineno
+        players.append(Player(alias=alias, name=name, score=score,
+                              aliases=list(aliases.values())))
     if not players:
-        raise ValueError(f"{path.name} contains no players")
+        raise ValueError(f"{source} contains no players")
     return players
 
 
-PLAYERS_LIST = load_players()
+PLAYERS_LIST = []
+
+
+def read_google_sheet():
+    """Read the configured spreadsheet with read-only service account access."""
+    settings = {
+        key: os.getenv(key, "").strip()
+        for key in ("GOOGLE_APPLICATION_CREDENTIALS",
+                    "GOOGLE_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_RANGE")
+    }
+    missing = [key for key, value in settings.items() if not value]
+    if missing:
+        raise ValueError(f"Missing configuration in .env: {', '.join(missing)}")
+
+    credentials_path = Path(settings["GOOGLE_APPLICATION_CREDENTIALS"]).expanduser()
+    if not credentials_path.is_absolute():
+        credentials_path = PROJECT_DIR / credentials_path
+    if not credentials_path.is_file():
+        raise ValueError("Google credentials file not found. Check GOOGLE_APPLICATION_CREDENTIALS.")
+
+    try:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        raise ValueError("Google libraries are missing. Run: python -m pip install -r requirements.txt") from None
+
+    try:
+        credentials = Credentials.from_service_account_file(
+            str(credentials_path),
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        )
+    except (ValueError, OSError):
+        raise ValueError("Cannot load the Google service account credentials. Check the JSON key file.") from None
+
+    try:
+        with build("sheets", "v4", credentials=credentials, cache_discovery=False) as service:
+            result = service.spreadsheets().values().get(
+                spreadsheetId=settings["GOOGLE_SHEETS_SPREADSHEET_ID"],
+                range=settings["GOOGLE_SHEETS_RANGE"],
+                majorDimension="ROWS",
+                valueRenderOption="UNFORMATTED_VALUE",
+            ).execute(num_retries=2)
+    except HttpError as error:
+        hints = {
+            400: "Check GOOGLE_SHEETS_RANGE; it must include the exact tab name.",
+            401: "Check the service account credentials and whether the key is active.",
+            403: "Enable the Sheets API and share the spreadsheet with the service account as Viewer.",
+            404: "Check the spreadsheet ID and share the spreadsheet with the service account.",
+        }
+        raise ValueError(
+            f"Google Sheets request failed (HTTP {error.resp.status}). "
+            + hints.get(error.resp.status, "Try again or check the Google API status.")
+        ) from None
+    except Exception as error:
+        raise ValueError(
+            f"Google Sheets connection failed ({type(error).__name__}). "
+            "Check your network and service account credentials."
+        ) from None
+
+    return result
+
+
+def print_google_sheet():
+    """Print spreadsheet contents without starting Telegram."""
+    result = read_google_sheet()
+    rows = result.get("values", [])
+    print(f"[SHEETS] Read {len(rows)} rows, including the header, from {result.get('range', '')}.")
+    if not rows:
+        print("[SHEETS] The selected range is empty.")
+        return
+    writer = csv.writer(sys.stdout, delimiter="\t", lineterminator="\n")
+    writer.writerows(rows)
+
+
+def load_roster():
+    """Select the roster source at startup; do not silently fall back."""
+    source = os.getenv("PLAYERS_SOURCE", "csv").strip().lower()
+    if source == "csv":
+        return load_players()
+    if source == "google_sheets":
+        result = read_google_sheet()
+        return parse_players(result.get("values", []), "Google Sheets")
+    raise ValueError("PLAYERS_SOURCE must be csv or google_sheets")
 
 
 # methods
@@ -311,14 +397,11 @@ async def balance_teams_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     players = []
     for alias in items:
-        print(f"Looking for: {alias}")
         found_player = find_player(alias)
         
         if found_player: 
-            print(f"Found: {found_player}")
             players.append(found_player)
         else:
-            print(f"player {alias} not found")
             await update.message.reply_text(f"player {alias} not found")
             return
 
@@ -328,16 +411,13 @@ async def balance_teams_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     teamA, teamB, delta = find_most_balanced_teams(players)
-    print(f"TeamA={teamA}")
-    print(f"TeamB={teamB}")
     result = f"{teamA.name} score={teamA.score:.2f}\n"
     for p in teamA.players:
-        result += f"{p.name}  {p.score}\n"
+        result += f"{p.name}  {p.score:.2f}\n"
     result += f"\n{teamB.name} score={teamB.score:.2f}\n"
     for p in teamB.players:
-        result += f"{p.name}  {p.score}\n"
+        result += f"{p.name}  {p.score:.2f}\n"
     result += f"\ndelta={delta:.2f}"
-    print(result)
     await update.message.reply_text(result)
 
     result_no_scores = f"{teamA.name}\n"
@@ -385,6 +465,23 @@ def find_most_balanced_teams(players):
 
 # main - app and commands
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Futsal team balancer bot")
+    parser.add_argument("--print-google-sheet", action="store_true",
+                        help="Read and print the configured Google Sheets range, then exit")
+    args = parser.parse_args()
+    if args.print_google_sheet:
+        try:
+            print_google_sheet()
+        except ValueError as error:
+            raise SystemExit(f"[SHEETS] {error}") from None
+        raise SystemExit(0)
+
+    try:
+        PLAYERS_LIST = load_roster()
+    except (ValueError, OSError) as error:
+        raise SystemExit(f"[ROSTER] {error}") from None
+    print(f"[ROSTER] Loaded {len(PLAYERS_LIST)} players from "
+          f"{os.getenv('PLAYERS_SOURCE', 'csv').strip().lower()}.")
     if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
     if not WHITELISTED_CHAT_IDS:
@@ -392,7 +489,7 @@ if __name__ == '__main__':
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    print(f"[BOT] Starting. Token loaded ({len(BOT_TOKEN)} chars), "
+    print(f"[BOT] Starting. "
           f"{len(WHITELISTED_CHAT_IDS)} whitelisted chat(s), {len(PLAYERS_LIST)} players.")
 
     app.add_handler(CommandHandler("start", start))
