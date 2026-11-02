@@ -120,17 +120,17 @@ intentionally prints private roster data; avoid sharing its output.
 Players live in `players.csv`, next to the script:
 
 ```csv
-Nome,Alias,Aliases,Grupo,Score Avaliador 1,Score Avaliador 2,Score Avaliador 3,Score Avaliador 4,Avg Score
+Name,Alias,Aliases,Group,Score Evaluator 1,Score Evaluator 2,Score Evaluator 3,Score Evaluator 4,Avg Score
 John Doe,jdoe,"jdoe, john",Monday Hall,4.50,,,4.50,4.50
 ```
 
-- **Nome** — display name; players can be identified by their name in `/balance`.
+- **Name** — display name; players can be identified by their name in `/balance`.
 - **Alias / Aliases** — optional handles for each player. Separate multiple aliases
   with commas and quote the CSV cell, as above. Either or both columns can be used;
   aliases must be unique across players. Matching ignores case and accents.
 - **Avg Score** — the score used for balancing. The script reads this value;
   it does not calculate an average from individual ratings.
-- **Grupo / Score Avaliador …** — optional information ignored by the bot.
+- **Group / Score Evaluator …** — optional information ignored by the bot.
 
 The older `alias,name,group,score` format is also supported. Columns can appear
 in any order; `Avg Score` takes priority over `score` if both exist.
