@@ -92,7 +92,8 @@ class WebhookTests(unittest.IsolatedAsyncioTestCase):
         self.telegram.initialize.assert_awaited_once()
         self.assertEqual(self.bot.PLAYERS_LIST, ["player"])
         route = next(r for r in self.app.router.routes() if r.method == "GET")
-        self.assertEqual((await route.handler(make_mocked_request("GET", "/healthz"))).status, 200)
+        self.assertEqual(route.resource.canonical, "/health")
+        self.assertEqual((await route.handler(make_mocked_request("GET", "/health"))).status, 200)
         await self.app.on_cleanup[-1](self.app)
         self.telegram.shutdown.assert_awaited_once()
 

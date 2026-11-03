@@ -73,7 +73,9 @@ Keep the same variable values in Cloud Run for subsequent deployments. Leave
 Use request-based billing, minimum instances zero, and a service-level maximum of
 one where available. These settings limit resources, not total charges.
 
-After deployment, open `https://YOUR_SERVICE_URL/healthz` and check for `status: ok`.
+After deployment, open `https://YOUR_SERVICE_URL/health` and check for `status: ok`.
+Avoid paths ending in `z`: Cloud Run reserves some of them and can return a
+frontend 404 before the request reaches the container or its request logs.
 Telegram will continue using its previous delivery mode until you explicitly
 register the webhook below.
 The Docker image and source upload use strict allowlists: no `.env`, credential

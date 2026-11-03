@@ -79,7 +79,7 @@ def create_web_app(bot, application=None):
     app = web.Application(client_max_size=1024 * 1024)
     app.on_startup.append(startup)
     app.on_cleanup.append(cleanup)
-    app.router.add_get("/healthz", health)
+    app.router.add_get("/health", health)
     app.router.add_post("/telegram", webhook)
     return app
 
