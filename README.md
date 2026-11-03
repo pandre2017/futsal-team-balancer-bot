@@ -1,5 +1,7 @@
 # Futsal Team Balancer Bot
 
+For remote hosting with Telegram webhooks, see [Cloud Run deployment](CLOUD_RUN.md).
+
 A Telegram bot that splits a list of players into two teams of roughly equal
 strength, based on a per-player skill score.
 

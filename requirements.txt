@@ -3,3 +3,4 @@ python-dotenv>=1.1,<2
 
 google-api-python-client
 google-auth
+aiohttp==3.14.5

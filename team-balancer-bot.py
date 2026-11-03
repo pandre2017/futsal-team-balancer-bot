@@ -136,20 +136,15 @@ def read_google_sheet():
     """Read the configured spreadsheet with read-only service account access."""
     settings = {
         key: os.getenv(key, "").strip()
-        for key in ("GOOGLE_APPLICATION_CREDENTIALS",
-                    "GOOGLE_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_RANGE")
+        for key in ("GOOGLE_SHEETS_SPREADSHEET_ID", "GOOGLE_SHEETS_RANGE")
     }
     missing = [key for key, value in settings.items() if not value]
     if missing:
         raise ValueError(f"Missing configuration in .env: {', '.join(missing)}")
 
-    credentials_path = Path(settings["GOOGLE_APPLICATION_CREDENTIALS"]).expanduser()
-    if not credentials_path.is_absolute():
-        credentials_path = PROJECT_DIR / credentials_path
-    if not credentials_path.is_file():
-        raise ValueError("Google credentials file not found. Check GOOGLE_APPLICATION_CREDENTIALS.")
-
     try:
+        import google.auth
+        from google.auth.exceptions import DefaultCredentialsError
         from google.oauth2.service_account import Credentials
         from googleapiclient.discovery import build
         from googleapiclient.errors import HttpError
@@ -157,12 +152,17 @@ def read_google_sheet():
         raise ValueError("Google libraries are missing. Run: python -m pip install -r requirements.txt") from None
 
     try:
-        credentials = Credentials.from_service_account_file(
-            str(credentials_path),
-            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-        )
-    except (ValueError, OSError):
-        raise ValueError("Cannot load the Google service account credentials. Check the JSON key file.") from None
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        key_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        if key_path:
+            credentials_path = Path(key_path).expanduser()
+            if not credentials_path.is_absolute():
+                credentials_path = PROJECT_DIR / credentials_path
+            credentials = Credentials.from_service_account_file(str(credentials_path), scopes=scopes)
+        else:
+            credentials, _ = google.auth.default(scopes=scopes)
+    except (ValueError, OSError, DefaultCredentialsError):
+        raise ValueError("Google authentication failed. Configure a local JSON key or attach a service account in Cloud Run.") from None
 
     try:
         with build("sheets", "v4", credentials=credentials, cache_discovery=False) as service:
@@ -463,39 +463,43 @@ def find_most_balanced_teams(players):
     return smallest_delta_team_a, smallest_delta_team_b, smallest_delta
 
 
-# main - app and commands
-if __name__ == '__main__':
+def build_application(webhook=False):
+    builder = ApplicationBuilder().token(BOT_TOKEN)
+    if webhook:
+        builder = builder.updater(None)
+    app = builder.build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("balance", balance_teams_command))
+    app.add_handler(CommandHandler("format", format_command))
+    return app
+
+
+def main():
+    global PLAYERS_LIST
     parser = argparse.ArgumentParser(description="Futsal team balancer bot")
     parser.add_argument("--print-google-sheet", action="store_true",
                         help="Read and print the configured Google Sheets range, then exit")
     args = parser.parse_args()
     if args.print_google_sheet:
-        try:
-            print_google_sheet()
-        except ValueError as error:
-            raise SystemExit(f"[SHEETS] {error}") from None
-        raise SystemExit(0)
-
-    try:
-        PLAYERS_LIST = load_roster()
-    except (ValueError, OSError) as error:
-        raise SystemExit(f"[ROSTER] {error}") from None
-    print(f"[ROSTER] Loaded {len(PLAYERS_LIST)} players from "
-          f"{os.getenv('PLAYERS_SOURCE', 'csv').strip().lower()}.")
+        print_google_sheet()
+        return
     if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
-    if not WHITELISTED_CHAT_IDS:
-        print("[BOT] Warning: WHITELISTED_CHAT_IDS is empty, the bot will ignore every chat.")
+        raise ValueError("BOT_TOKEN is not set. Copy .env.example to .env and fill it in.")
+    mode = os.getenv("BOT_MODE", "polling").strip().lower()
+    if mode not in {"polling", "webhook"}:
+        raise ValueError("BOT_MODE must be polling or webhook")
+    if mode == "webhook":
+        from cloud_run import run_webhook
+        run_webhook(sys.modules[__name__])
+        return
+    PLAYERS_LIST = load_roster()
+    print(f"[BOT] Loaded {len(PLAYERS_LIST)} players. Starting polling.")
+    build_application().run_polling()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    print(f"[BOT] Starting. "
-          f"{len(WHITELISTED_CHAT_IDS)} whitelisted chat(s), {len(PLAYERS_LIST)} players.")
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("balance", balance_teams_command))
-    app.add_handler(CommandHandler("format", format_command))
-
-    print("[BOT] Handlers registered. Starting polling...")
-    app.run_polling()
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError) as error:
+        raise SystemExit(f"[BOT] {error}") from None

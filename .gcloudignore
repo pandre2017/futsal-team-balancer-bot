@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!.dockerignore
+!.gcloudignore
+!requirements.txt
+!team-balancer-bot.py
+!cloud_run.py
